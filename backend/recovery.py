@@ -1,15 +1,9 @@
 import time
+import subprocess
 import uuid
 
 def restart_pod(service_name: str) -> tuple:
     """
-    Executes exactly one bounded recovery action via the mock Kubernetes logic.
-    Normally uses kubernetes-client to delete exactly 1 pod.
-    
-    Args:
-        service_name: the logical name of the service
-        
-    Returns:
         pod_name string that was deleted
         timestamp float
     """

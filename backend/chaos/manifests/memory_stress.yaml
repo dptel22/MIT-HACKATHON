@@ -1,0 +1,15 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: memory-stress-SERVICE_PLACEHOLDER
+  namespace: default
+spec:
+  mode: one
+  selector:
+    labelSelectors:
+      app: SERVICE_PLACEHOLDER
+  stressors:
+    memory:
+      workers: 2
+      size: '256MB'
+  duration: '60s'

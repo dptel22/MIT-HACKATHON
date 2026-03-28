@@ -1,0 +1,118 @@
+## Chaos Layer — Complete Structure & Explanation
+
+***
+
+## Folder Structure
+
+```
+chaos/
+├── __init__.py                 ← empty, makes it a Python package
+├── chaos_engine.py             ← MAIN controller (only Python file)
+└── manifests/
+    ├── pod_kill.yaml           ← kills one pod
+    ├── cpu_stress.yaml         ← pins CPU to 90%
+    ├── memory_stress.yaml      ← fills RAM with 256MB
+    ├── network_latency.yaml    ← adds 300ms delay
+    └── packet_loss.yaml        ← drops 45% of packets
+```
+
+That's it. **6 files total.** Nothing else.
+
+***
+
+## What Each File Does
+
+### `chaos_engine.py` — The Brain
+
+This is the only Python file. It has **5 functions**:
+
+```
+check_chaos_mesh_available()   ← called at startup, checks if Chaos Mesh pods are running
+inject_chaos_safe()            ← THE MAIN FUNCTION called by FastAPI
+inject_chaos()                 ← internal, reads YAML + applies via kubectl
+fallback_pod_kill()            ← backup if Chaos Mesh not available
+cleanup_all()                  ← wipes all active experiments after demo
+```
+
+**Flow when FastAPI calls `inject_chaos_safe("cartservice", "cpu_stress")`:**
+```
+1. Is service critical (frontend/checkoutservice)? → BLOCK, return error
+2. Is Chaos Mesh available?
+   YES → read cpu_stress.yaml → replace SERVICE_PLACEHOLDER → kubectl apply
+   NO  → if scenario is pod_kill → run fallback_pod_kill()
+       → if any other scenario → return error (can't do without Chaos Mesh)
+3. Return {success, service, scenario, timestamp}
+```
+
+***
+
+### The 5 YAML Manifests — The Weapons
+
+Each YAML is a Chaos Mesh experiment definition. They are **templates** — the word `SERVICE_PLACEHOLDER` gets replaced at runtime by `chaos_engine.py` with the real service name.
+
+| File | Chaos Mesh Kind | What Happens to the Pod | Duration | Trained Scenario |
+|---|---|---|---|---|
+| `pod_kill.yaml` | PodChaos | Pod is killed, k8s recreates it | 30s | `pod_kill` |
+| `cpu_stress.yaml` | StressChaos | 4 workers pin CPU at 90% | 60s | `cpu_stress` |
+| `memory_stress.yaml` | StressChaos | 2 workers fill 256MB RAM | 60s | `memory_stress` |
+| `network_latency.yaml` | NetworkChaos | Adds 300ms ±50ms delay | 60s | `network_latency` |
+| `packet_loss.yaml` | NetworkChaos | Drops 45% of packets | 60s | `packet_loss` |
+
+***
+
+## How It Connects To Everything Else
+
+```
+DEMO JUDGE clicks inject on Dashboard
+        ↓
+FastAPI POST /api/chaos/inject?service=cartservice&scenario=cpu_stress
+        ↓
+chaos_engine.inject_chaos_safe("cartservice", "cpu_stress")
+        ↓
+kubectl apply → Chaos Mesh → Pod starts burning CPU
+        ↓
+Prometheus sees CPU spike + latency spike (via Istio)
+        ↓
+prometheus_client.fetch_metrics("cartservice") returns high values
+        ↓
+detector.run_detection() votes anomaly 4/5 → triggered=True
+        ↓
+decision.make_decision() → action=RECOVER
+        ↓
+recovery.restart_one_pod("cartservice")
+        ↓
+verifier.verify_recovery() → status=HEALED
+        ↓
+Dashboard shows full loop ← THIS IS YOUR DEMO
+```
+
+***
+
+## Rules Your Friend Must Follow
+
+```
+1. NEVER inject into frontend or checkoutservice   ← blocked in code
+2. ALWAYS run cleanup_all() after each demo        ← or services stay broken
+3. ONE scenario at a time only                     ← blast radius guard will freeze everything if 2+
+4. Chaos Mesh experiments auto-expire              ← but cleanup anyway
+5. Only run on kind/minikube                       ← never on a real cluster
+```
+
+***
+
+## What Your Friend Needs To Build
+
+Give your friend **exactly this checklist:**
+
+```
+1. Install Chaos Mesh on the cluster (helm install)
+2. Create chaos/__init__.py     ← empty file
+3. Create chaos/manifests/      ← all 5 YAMLs (already have them from earlier in chat)
+4. Create chaos/chaos_engine.py ← use the LLM prompt from earlier in chat
+5. Test manually:
+   python -c "from chaos.chaos_engine import check_chaos_mesh_available; check_chaos_mesh_available()"
+   python -c "from chaos.chaos_engine import inject_chaos_safe; print(inject_chaos_safe('cartservice','pod_kill'))"
+   kubectl get podchaos -n chaos-mesh
+   python -c "from chaos.chaos_engine import cleanup_all; cleanup_all()"
+```
+

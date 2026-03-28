@@ -1,0 +1,16 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: network-latency-SERVICE_PLACEHOLDER
+  namespace: default
+spec:
+  action: delay
+  mode: all
+  selector:
+    labelSelectors:
+      app: SERVICE_PLACEHOLDER
+  delay:
+    latency: '300ms'
+    correlation: '100'
+    jitter: '50ms'
+  duration: '60s'

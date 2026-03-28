@@ -5,7 +5,6 @@ from typing import List
 import time
 import asyncio
 
-# Local Imports
 import database
 import models
 import prometheus_client
@@ -13,11 +12,11 @@ import detector
 import decision
 import recovery
 import verifier
+from chaos.chaos_engine import inject_chaos_safe, cleanup_all
 
-# Initialize database
 models.Base.metadata.create_all(bind=database.engine)
 
-app = FastAPI(title="KubeResilience", version="1.0.0")
+app = FastAPI(title="KubeResilience", version="1.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,17 +26,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-Memory State
+# The 5 explicit services chosen for the dashboard tracking
+SERVICES = ["cartservice", "paymentservice", "recommendationservice", "shippingservice", "productcatalogservice"]
+
+# Independent States!
 state = {
     "warmup_done": False,
-    "baseline_avg": 100.0, # default mock float
-    "votes": [], # list of up to 5 ints
-    "confidence": 0.0,
     "manual_mode": False,
-    "cooldowns": {} # dict: service_name -> timestamp of last action
+    "cooldowns": {},
+    "services": {
+        svc: {
+            "baseline_avg": 100.0,
+            "votes": [],
+            "confidence": 0.0,
+            "is_anomaly": False,
+            "features": {"p95_latency": 0.0, "error_rate": 0.0, "cpu": 0.0, "memory": 0.0}
+        } for svc in SERVICES
+    }
 }
 
-# Dependency
 def get_db():
     db = database.SessionLocal()
     try:
@@ -45,26 +52,29 @@ def get_db():
     finally:
         db.close()
 
-
 @app.get("/api/health")
 def read_health():
     return {"status": "ok"}
 
+@app.get("/api/services")
+def list_services():
+    """Returns the exact list of the 5 tracked services for the frontend."""
+    return {"services": SERVICES}
 
 async def perform_warmup():
-    print("[WARMUP] Starting 10-minute warm-up phase (Mocked to 10 seconds for demo).")
-    await asyncio.sleep(10) # Faking the warmup duration
+    print("[WARMUP] Starting 10-second warm-up phase.")
+    await asyncio.sleep(10) 
     
-    # Calculate baseline
-    baselines = []
-    for _ in range(5):
-        features = prometheus_client.fetch_metrics()
-        baselines.append(features.get("p95_latency", 0))
-        await asyncio.sleep(1)
+    for svc in SERVICES:
+        baselines = []
+        for _ in range(5):
+            features = prometheus_client.fetch_metrics(svc)
+            baselines.append(features.get("p95_latency", 0))
         
-    state["baseline_avg"] = sum(baselines) / len(baselines) if baselines else 100.0
+        state["services"][svc]["baseline_avg"] = sum(baselines) / len(baselines) if baselines else 100.0
+        
     state["warmup_done"] = True
-    print(f"[WARMUP] Completed. Baseline latency avg: {state['baseline_avg']} ms")
+    print(f"[WARMUP] Completed.")
 
 @app.post("/api/warmup/start")
 def start_warmup(background_tasks: BackgroundTasks):
@@ -75,57 +85,66 @@ def start_warmup(background_tasks: BackgroundTasks):
 
 @app.get("/api/warmup/status")
 def warmup_status():
-    return {"done": state["warmup_done"], "baseline_avg": state["baseline_avg"]}
+    return {"done": state["warmup_done"]}
 
 @app.post("/api/detect/run")
 def run_detect():
+    """
+    Called by the dashboard loop. Overrides global polling and individually returns metrics
+    for all 5 services!
+    """
     if not state["warmup_done"]:
         return {"error": "Wait until warmup is completed"}
     if state["manual_mode"]:
         return {"error": "System frozen in manual mode"}
         
-    features = prometheus_client.fetch_metrics()
-    confidence, new_votes, is_anomaly = detector.run_detector(features, state["votes"])
+    # Poll all 5 services!
+    for svc in SERVICES:
+        svc_state = state["services"][svc]
+        features = prometheus_client.fetch_metrics(svc)
+        
+        confidence, new_votes, is_anomaly = detector.run_detector(features, svc_state["votes"])
+        
+        svc_state["votes"] = new_votes
+        svc_state["confidence"] = confidence
+        svc_state["is_anomaly"] = is_anomaly
+        svc_state["features"] = features
     
-    state["votes"] = new_votes
-    state["confidence"] = confidence
-    
-    return {
-        "confidence": confidence,
-        "votes": new_votes,
-        "is_anomaly": is_anomaly,
-        "features": features
-    }
-
-class RecoverRequest(str):
-    pass
+    # Returns the mass dictionary of all 5 services to generate cards!
+    return state["services"]
 
 @app.post("/api/recover")
 def recover_service(service_name: str, db: Session = Depends(get_db)):
     if state["manual_mode"]:
         raise HTTPException(status_code=400, detail="Automation frozen in manual mode")
         
-    should_act, reason = decision.evaluate_decision(state["confidence"], state["votes"], service_name, state["cooldowns"])
+    if service_name not in SERVICES:
+        raise HTTPException(status_code=404, detail="Service not tracked")
+        
+    svc_state = state["services"][service_name]
+    
+    should_act, reason = decision.evaluate_decision(
+        svc_state["confidence"], 
+        svc_state["votes"], 
+        service_name, 
+        state["cooldowns"]
+    )
     
     if not should_act:
         return {"status": "skipped", "reason": reason}
         
-    # Recovery Process
     pod_deleted, timestamp = recovery.restart_pod(service_name)
     state["cooldowns"][service_name] = timestamp
     
-    # Verifier Process
-    status = verifier.verify_recovery(pod_deleted, state["baseline_avg"])
+    status = verifier.verify_recovery(pod_deleted, svc_state["baseline_avg"])
     
-    # Handle critical failure
     if status == "FAILED":
         state["manual_mode"] = True
     
-    # Save Incident to PostgreSQL via SQLAlchemy
     new_incident = models.Incident(
         service=service_name,
-        confidence=state["confidence"],
-        votes=state["votes"],
+        confidence=svc_state["confidence"],
+        votes=svc_state["votes"],
         action=f"restarted 1 pod ({pod_deleted})",
         pod_name=pod_deleted,
         status=status,
@@ -140,8 +159,7 @@ def recover_service(service_name: str, db: Session = Depends(get_db)):
 
 @app.get("/api/incidents")
 def get_incidents(db: Session = Depends(get_db)):
-    incidents = db.query(models.Incident).order_by(models.Incident.timestamp.desc()).all()
-    return incidents
+    return db.query(models.Incident).order_by(models.Incident.timestamp.desc()).all()
 
 @app.get("/api/latest")
 def get_latest_incident(db: Session = Depends(get_db)):
@@ -149,3 +167,25 @@ def get_latest_incident(db: Session = Depends(get_db)):
     if not incident:
         return {"message": "No incidents yet"}
     return incident
+
+@app.post("/api/chaos/inject")
+def trigger_chaos(service: str, scenario: str):
+    if service not in SERVICES and service not in ["frontend", "checkoutservice"]:
+        raise HTTPException(status_code=404, detail=f"Service {service} not tracked")
+    
+    result = inject_chaos_safe(service, scenario)
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail=result["error"])
+        
+    # Simulate an immediate spike in the backend state for the dashboard demo!
+    if service in state["services"]:
+        state["services"][service]["is_anomaly"] = True
+        state["services"][service]["confidence"] = 99.0
+        state["services"][service]["votes"] = [1, 1, 1, 1, 1]
+    
+    return result
+
+@app.post("/api/chaos/cleanup")
+def chaos_cleanup():
+    cleanup_all()
+    return {"message": "All chaos experiments cleaned up"}
