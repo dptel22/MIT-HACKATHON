@@ -1,5 +1,7 @@
 # KubeResilience Backend Documentation
 
+> Historical implementation notes. The current codebase is the source of truth if this document disagrees with the code.
+
 This document outlines the implemented architecture, endpoints, and modifications applied to the backend system for the KubeResilience hackathon project.
 
 ## 1. Overview

@@ -16,7 +16,7 @@ chaos/
 └── manifests/
     ├── pod_kill.yaml           ← Native PodChaos
     ├── cpu_stress.yaml         ← StressChaos (90% CPU)
-    ├── memory_stress.yaml      ← StressChaos (256MB RAM)
+    ├── memory_leak.yaml        ← StressChaos (256MB RAM)
     ├── network_latency.yaml    ← NetworkChaos (300ms delay)
     └── packet_loss.yaml        ← NetworkChaos (45% drop)
 ```

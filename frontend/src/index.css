@@ -165,11 +165,18 @@ body::after {
 .badge-healthy  { background: rgba(0,255,102,0.15); color: var(--neon-green); border-left: 2px solid var(--neon-green); text-shadow: 0 0 5px var(--neon-green); }
 .badge-watching { background: rgba(255,234,0,0.15); color: var(--neon-amber); border-left: 2px solid var(--neon-amber); text-shadow: 0 0 5px var(--neon-amber); }
 .badge-anomaly  { background: rgba(255,0,60,0.2); color: var(--neon-red); border-left: 2px solid var(--neon-red); text-shadow: 0 0 8px var(--neon-red); animation: alert-pulse 1s infinite alternate; }
+.badge-circuit  { background: rgba(255,153,0,0.15); color: #ff9900; border-left: 2px solid #ff9900; text-shadow: 0 0 5px #ff9900; animation: alert-pulse-orange 1.5s infinite alternate; }
+.badge-cooldown { background: rgba(0,240,255,0.15); color: var(--neon-cyan); border-left: 2px solid var(--neon-cyan); text-shadow: 0 0 5px var(--neon-cyan); }
 .badge-warming  { background: rgba(0,240,255,0.15); color: var(--neon-cyan); border-left: 2px solid var(--neon-cyan); text-shadow: 0 0 5px var(--neon-cyan); }
 
 @keyframes alert-pulse {
   0% { box-shadow: 0 0 5px rgba(255,0,60,0.2) inset; color: #ff5577; }
   100% { box-shadow: 0 0 15px rgba(255,0,60,0.6) inset; color: var(--neon-red); }
+}
+
+@keyframes alert-pulse-orange {
+  0% { box-shadow: 0 0 5px rgba(255,153,0,0.2) inset; color: #ffaa33; }
+  100% { box-shadow: 0 0 15px rgba(255,153,0,0.6) inset; color: #ff9900; }
 }
 
 /* ── Tactical Header ── */

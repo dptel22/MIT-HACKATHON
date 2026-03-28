@@ -1,5 +1,7 @@
 **KubeResilience**
 
+> Original scope document. The live code reflects later demo-oriented implementation changes.
+
 Backend Product Requirements Document
 
 For Antigravity \| Hackathon MVP Scope

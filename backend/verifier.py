@@ -2,7 +2,7 @@ import time
 import os
 import prometheus_client
 
-from config import KUBE_NAMESPACE
+from config import DEMO_MODE, KUBE_CONFIG_PATH, KUBE_NAMESPACE
 
 try:
     from kubernetes import client, config
@@ -10,72 +10,90 @@ try:
 except ImportError:
     HAS_K8S = False
 
-def verify_recovery(pod_deleted: str, baseline_avg: float) -> str:
+CHECK_INTERVAL_SECONDS = 3 if DEMO_MODE else 5
+MAX_ATTEMPTS = 10 if DEMO_MODE else 12
+MAX_WAIT_SECONDS = CHECK_INTERVAL_SECONDS * MAX_ATTEMPTS
+
+def verify_recovery(service_name: str, pod_deleted: str, baseline: dict) -> str:
     """
     Confirms whether recovery actually worked post-restart.
-    Waits 20s, checks readiness states, and compares p95 latency against 1.5x baseline limit.
-    
-    Args:
-        pod_deleted: name of the deleted pod (used to derive service name)
-        baseline_avg: the p95 baseline captured via stats
-        
-    Returns:
-        status string: 'HEALED' or 'FAILED'
+    Adaptively waits up to MAX_WAIT_SECONDS, checking readiness and metrics.
     """
-    # PRD Requirement: Wait 20-30 seconds after deletion before checking
-    print(f"[VERIFIER] Waiting 20 seconds to assess recovery for service related to {pod_deleted}...")
-    time.sleep(20)
-    
-    try:
-        # Extract base service name (e.g. 'cartservice' from 'cartservice-xyz-123')
-        # We can also handle exact hits.
-        parts = pod_deleted.split('-')
-        service_name = parts[0] if len(parts) >= 2 else pod_deleted
+    print(f"[VERIFIER] Initiating adaptive health assessment for {service_name} (Max {MAX_WAIT_SECONDS}s)...")
 
-        # Check Pod Readiness
-        kubeconfig_path = os.path.join(os.path.dirname(__file__), "kubeconfig.yaml")
-        if HAS_K8S and os.path.exists(kubeconfig_path):
-            config.load_kube_config(config_file=kubeconfig_path)
-            v1 = client.CoreV1Api()
-            
-            pods = v1.list_namespaced_pod(
-                namespace=KUBE_NAMESPACE,
-                label_selector=f"app={service_name}",
-            )
-            
+    # Initialize Kubernetes client once if available
+    v1 = None
+    if HAS_K8S and os.path.exists(KUBE_CONFIG_PATH):
+        config.load_kube_config(config_file=KUBE_CONFIG_PATH)
+        v1 = client.CoreV1Api()
+        
+    for attempt in range(MAX_ATTEMPTS):
+        time.sleep(CHECK_INTERVAL_SECONDS)
+        print(f"[VERIFIER] Attempt {attempt+1}/{MAX_ATTEMPTS} for {service_name}...")
+        
+        try:
+            # Check Pod Readiness
             pod_ready = False
-            for pod in pods.items:
-                if pod.status.phase == "Running" and pod.status.conditions:
-                    for condition in pod.status.conditions:
-                        if condition.type == "Ready" and condition.status == "True":
-                            pod_ready = True
-                            break
-                if pod_ready:
+            if v1:
+                pods = v1.list_namespaced_pod(
+                    namespace=KUBE_NAMESPACE,
+                    label_selector=f"app={service_name}",
+                )
+                
+                for pod in pods.items:
+                    # Ignore terminating pods
+                    if pod.metadata.deletion_timestamp is not None:
+                        continue
+                        
+                    if pod.status.phase == "Running" and pod.status.conditions:
+                        for condition in pod.status.conditions:
+                            if condition.type == "Ready" and condition.status == "True":
+                                pod_ready = True
+                                break
+                    if pod_ready:
+                        break
+                        
+                if not pod_ready:
+                    print(f"[VERIFIER] Not yet ready: No active ready pods found for {service_name}.")
+                    continue # Try again next loop
+            else:
+                pod_ready = True # Mock mode passes implicitly
+                
+            # Check all core metrics against baselines
+            metrics = prometheus_client.fetch_metrics(service_name)
+            
+            checks = [
+                ("p95_latency_ms", "p95_latency_ms_mean", 1.5),
+                ("error_rate_pct", "error_rate_pct_mean", 1.5),
+                ("cpu_cores", "cpu_cores_mean", 1.5),
+                ("memory_mb", "memory_mb_mean", 1.5)
+            ]
+            
+            all_metrics_passed = True
+            for metric_key, base_key, multiplier in checks:
+                val = metrics.get(metric_key)
+                if val is None:
+                    print(f"[VERIFIER] Still missing metric {metric_key} for {service_name}.")
+                    all_metrics_passed = False
                     break
                     
-            if not pod_ready:
-                print(f"[VERIFIER] FAILED: No ready pods found for {service_name}.")
-                return "FAILED"
-        else:
-            print(f"[VERIFIER] Mock: Assuming pod readiness passes because kubeconfig.yaml is absent.")
+                base_val = baseline.get(base_key, 0.0)
+                threshold = max(base_val * multiplier, base_val + 0.1) # Add tiny delta for zero baselines
+                
+                if val >= threshold:
+                    print(f"[VERIFIER] Metric {metric_key}={val:.2f} still >= allowed threshold ({threshold:.2f}).")
+                    all_metrics_passed = False
+                    break
+                    
+            if not all_metrics_passed:
+                continue # Try again next loop
+                
+            print(f"[VERIFIER] HEALED: All metrics and pods for {service_name} have fully stabilized!")
+            return "HEALED"
             
-        print(f"[VERIFIER] Assessing latency compared to baseline {baseline_avg} ms")
-        
-        # Check Latency Recovery
-        metrics = prometheus_client.fetch_metrics(service_name)
-        lat = metrics.get('p95_latency_ms')
-        
-        if lat is None:
-            print(f"[VERIFIER] FAILED: Missing latency metric for {service_name}.")
-            return "FAILED"
-            
-        if lat >= baseline_avg * 1.5:
-            print(f"[VERIFIER] FAILED: Latency {lat:.2f}ms is >= allowed threshold ({baseline_avg * 1.5:.2f}ms).")
-            return "FAILED"
-            
-        print(f"[VERIFIER] HEALED: Latency {lat:.2f}ms is well within limits of {baseline_avg * 1.5:.2f}ms.")
-        return "HEALED"
-        
-    except Exception as e:
-        print(f"[VERIFIER] FAILED due to Exception: {e}")
-        return "FAILED"
+        except Exception as e:
+            print(f"[VERIFIER] Exception during check attempt: {e}")
+            continue
+
+    print(f"[VERIFIER] FAILED: Recovery timeout reached ({MAX_WAIT_SECONDS}s) for {service_name}. Unable to verify stability.")
+    return "FAILED"

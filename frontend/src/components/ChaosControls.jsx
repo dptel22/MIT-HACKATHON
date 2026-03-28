@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { cleanupChaos, injectChaos } from '../api';
+import { cleanupChaos, injectChaos, startAutoChaos, stopAutoChaos } from '../api';
 
 function formatScenarioLabel(value) {
   return value
@@ -12,6 +12,8 @@ export default function ChaosControls({
   onLog,
   serviceOptions = [],
   scenarioOptions = [],
+  autoChaos = false,
+  setAutoChaos,
 }) {
   const [service, setService] = useState(serviceOptions[0] || '');
   const [scenario, setScenario] = useState(scenarioOptions[0] || '');
@@ -65,6 +67,22 @@ export default function ChaosControls({
     }
   };
 
+  const handleToggleAuto = async () => {
+    try {
+      if (autoChaos) {
+        await stopAutoChaos();
+        setAutoChaos(false);
+        onLog({ level: 'info', msg: 'Auto-Chaos Disabled.' });
+      } else {
+        await startAutoChaos();
+        setAutoChaos(true);
+        onLog({ level: 'chaos', msg: 'Auto-Chaos Enabled: Waiting for 30s...' });
+      }
+    } catch (e) {
+      onLog({ level: 'anomaly', msg: `Auto-Chaos toggle failed: ${e.message}` });
+    }
+  };
+
   return (
     <div className="card" style={{ gridColumn: '1 / -1' }}>
       <div className="section-title">Chaos Controls</div>
@@ -98,6 +116,12 @@ export default function ChaosControls({
         </button>
         <button className="btn btn-outline" onClick={handleCleanup} disabled={cleaning}>
           {cleaning ? 'Cleaning...' : 'Cleanup All'}
+        </button>
+        <button
+          className={autoChaos ? 'btn btn-danger' : 'btn btn-outline'}
+          onClick={handleToggleAuto}
+        >
+          {autoChaos ? 'Stop Auto-Chaos' : 'Start Auto-Chaos'}
         </button>
       </div>
     </div>

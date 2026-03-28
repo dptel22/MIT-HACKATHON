@@ -61,3 +61,11 @@ export async function injectChaos(service, scenario) {
 export async function cleanupChaos() {
   return requestJson('/chaos/cleanup', { method: 'POST' });
 }
+
+export async function startAutoChaos() {
+  return requestJson('/chaos/auto/start', { method: 'POST' });
+}
+
+export async function stopAutoChaos() {
+  return requestJson('/chaos/auto/stop', { method: 'POST' });
+}

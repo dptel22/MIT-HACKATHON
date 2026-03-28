@@ -12,6 +12,10 @@ def _env_bool(name: str, default: bool) -> bool:
 
 PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "").strip()
 KUBE_NAMESPACE = os.environ.get("KUBE_NAMESPACE", "boutique").strip() or "boutique"
+KUBE_CONFIG_PATH = os.environ.get(
+    "KUBE_CONFIG_PATH",
+    os.path.join(os.path.dirname(__file__), "kubeconfig.yaml"),
+).strip()
 PROMETHEUS_TIMEOUT_SECONDS = float(
     os.environ.get("PROMETHEUS_TIMEOUT_SECONDS", "0.75")
 )

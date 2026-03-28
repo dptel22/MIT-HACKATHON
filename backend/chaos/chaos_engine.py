@@ -2,7 +2,7 @@ import subprocess
 import os
 import time
 
-from config import DEMO_MODE
+from config import DEMO_MODE, KUBE_NAMESPACE
 from service_catalog import get_supported_chaos_scenarios
 
 MANIFEST_DIR = os.path.join(os.path.dirname(__file__), 'manifests')
@@ -33,11 +33,32 @@ def check_chaos_mesh_available():
 def fallback_pod_kill(service):
     """Backup pod kill method using plain kubectl if Chaos Mesh isn't available."""
     try:
-        cmd = f"kubectl get pod -l app={service} -o jsonpath={{.items[0].metadata.name}}"
-        pod_name = subprocess.run(cmd, shell=True, capture_output=True, text=True).stdout.strip()
+        pod_name = subprocess.run(
+            [
+                "kubectl",
+                "get",
+                "pod",
+                "-n",
+                KUBE_NAMESPACE,
+                "-l",
+                f"app={service}",
+                "-o",
+                "jsonpath={.items[0].metadata.name}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
         if pod_name:
-            subprocess.run(f"kubectl delete pod {pod_name}", shell=True, check=True)
-            return True, f"Fallback pod kill successful for {service}"
+            delete_result = subprocess.run(
+                ["kubectl", "delete", "pod", pod_name, "-n", KUBE_NAMESPACE],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if delete_result.returncode == 0:
+                return True, f"Fallback pod kill successful for {service}"
+            return False, delete_result.stderr.strip() or f"Fallback pod kill failed for {service}"
         return False, f"No running pod found for {service}"
     except Exception as e:
         return False, f"Fallback pod kill failed: {str(e)}"
@@ -55,7 +76,7 @@ def inject_chaos(service, scenario):
         content = content.replace("SERVICE_PLACEHOLDER", service)
         
         process = subprocess.Popen(
-            ['kubectl', 'apply', '-f', '-'], 
+            ['kubectl', 'apply', '-n', KUBE_NAMESPACE, '-f', '-'],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )
         stdout, stderr = process.communicate(input=content)
@@ -128,6 +149,20 @@ def cleanup_all():
     experiments = ["podchaos", "stresschaos", "networkchaos"]
     for exp in experiments:
         try:
-            subprocess.run(f"kubectl delete {exp} --all --all-namespaces", shell=True, capture_output=True, timeout=5)
+            subprocess.run(
+                [
+                    "kubectl",
+                    "delete",
+                    exp,
+                    "--all",
+                    "-n",
+                    KUBE_NAMESPACE,
+                    "--ignore-not-found=true",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
         except subprocess.TimeoutExpired:
             pass

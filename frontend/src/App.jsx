@@ -6,7 +6,7 @@ import StatCard from './components/StatCard';
 import VoteBuffer from './components/VoteBuffer';
 import ServiceStatus from './components/ServiceStatus';
 import LatencyChart from './components/LatencyChart';
-import IncidentTimeline from './components/IncidentTimeline';
+import IncidentHistory from './components/IncidentHistory';
 import ChaosControls from './components/ChaosControls';
 
 import {
@@ -55,6 +55,7 @@ export default function App() {
   const [serviceList, setServiceList] = useState([]);
   const [chaosServices, setChaosServices] = useState([]);
   const [chaosScenarios, setChaosScenarios] = useState([]);
+  const [autoChaos, setAutoChaos] = useState(false);
   const [services, setServices] = useState({});
   const [incidents, setIncidents] = useState([]);
   const [logs, setLogs] = useState([
@@ -71,7 +72,6 @@ export default function App() {
   const latestIncident = incidents[0] || null;
   const globalStatus = services[selected]?._status || 'HEALTHY';
 
-  const warmupPollRef = useRef(null);
   const detectPollRef = useRef(null);
   const pendingRecover = useRef(new Set());
 
@@ -92,6 +92,7 @@ export default function App() {
         setServiceList(nextServices);
         setChaosServices(runtimeConfig.chaos_services || []);
         setChaosScenarios(runtimeConfig.chaos_scenarios || []);
+        setAutoChaos(runtimeConfig.auto_chaos === true);
         setServices(makeInitialServices(nextServices));
         setHistoryMap(makeInitialHistoryMap(nextServices));
         setSelected(nextServices[0] || '');
@@ -111,26 +112,27 @@ export default function App() {
       } catch {
         addLog({ level: 'info', msg: 'Warm-up already completed or skipped.' });
       }
-
-      warmupPollRef.current = setInterval(async () => {
-        try {
-          const { done } = await getWarmupStatus();
-          if (done) {
-            clearInterval(warmupPollRef.current);
-            setWarmupDone(true);
-            addLog({ level: 'recover', msg: 'Warm-up complete. Baseline fitted.' });
-          }
-        } catch {
-          // ignore background warmup polling errors
-        }
-      }, 1500);
     })();
-
-    return () => {
-      clearInterval(warmupPollRef.current);
-      clearInterval(detectPollRef.current);
-    };
   }, [addLog]);
+
+  // Handle Warmup Polling properly outside of the once-per-mount effect
+  useEffect(() => {
+    if (!connected || warmupDone) return;
+
+    const intervalId = setInterval(async () => {
+      try {
+        const { done } = await getWarmupStatus();
+        if (done) {
+          setWarmupDone(true);
+          addLog({ level: 'recover', msg: 'Warm-up complete. Baseline fitted.' });
+        }
+      } catch {
+        // ignore background errors
+      }
+    }, 1500);
+
+    return () => clearInterval(intervalId);
+  }, [connected, warmupDone, addLog]);
 
   useEffect(() => {
     if (!serviceList.length) {
@@ -147,11 +149,16 @@ export default function App() {
       return undefined;
     }
 
-    detectPollRef.current = setInterval(async () => {
+    let isPolling = true;
+
+    const poll = async () => {
+      if (!isPolling) return;
       try {
         const data = await runDetect();
+        setConnected(true);
         if (data.error) {
           addLog({ level: 'info', msg: data.error });
+          detectPollRef.current = setTimeout(poll, POLL_MS);
           return;
         }
 
@@ -167,7 +174,23 @@ export default function App() {
           const next = { ...prev };
           Object.entries(data).forEach(([service, svcState]) => {
             const prevStatus = prev[service]?._status || 'HEALTHY';
-            next[service] = { ...svcState, _status: prevStatus };
+            let newStatus = prevStatus;
+            
+            if (svcState.recovery_in_progress) {
+              newStatus = 'RECOVERING';
+            } else if (svcState.circuit_broken) {
+              newStatus = 'CIRCUIT_BROKEN';
+            } else if (svcState.cooldown && svcState.cooldown > 0) {
+              newStatus = 'COOLDOWN';
+            } else if (svcState.is_anomaly && svcState.confidence >= 80) {
+              newStatus = 'ANOMALY';
+            } else if (svcState.is_anomaly && svcState.confidence > 0) {
+              newStatus = 'WATCHING';
+            } else if (prevStatus !== 'FAILED' && prevStatus !== 'HEALED') {
+              newStatus = 'HEALTHY';
+            }
+
+            next[service] = { ...svcState, _status: newStatus };
           });
           return next;
         });
@@ -185,7 +208,14 @@ export default function App() {
 
         for (const [service, svcState] of Object.entries(data)) {
           const votes = svcState.votes || [];
-          if (!svcState.is_anomaly || svcState.confidence < 80 || pendingRecover.current.has(service)) {
+          if (
+            !svcState.is_anomaly
+            || svcState.confidence < 80
+            || pendingRecover.current.has(service)
+            || svcState.recovery_in_progress
+            || svcState.circuit_broken
+            || (svcState.cooldown && svcState.cooldown > 0)
+          ) {
             continue;
           }
 
@@ -213,6 +243,7 @@ export default function App() {
                   ...prev,
                   [service]: { ...prev[service], _status: 'HEALED', is_anomaly: false },
                 }));
+                // Update latency history to tag it as recovered
                 setHistoryMap((prev) => ({
                   ...prev,
                   [service]: [
@@ -222,6 +253,10 @@ export default function App() {
                 }));
               } else if (res.status === 'FAILED') {
                 addLog({ level: 'anomaly', msg: `Recovery FAILED for ${service}. Manual mode engaged.` });
+                setServices((prev) => ({
+                  ...prev,
+                  [service]: { ...prev[service], _status: 'FAILED' },
+                }));
               }
 
               const nextIncidents = await getIncidents();
@@ -235,10 +270,19 @@ export default function App() {
         }
       } catch {
         setConnected(false);
+      } finally {
+        if (isPolling) {
+          detectPollRef.current = setTimeout(poll, POLL_MS);
+        }
       }
-    }, POLL_MS);
+    };
 
-    return () => clearInterval(detectPollRef.current);
+    poll();
+
+    return () => {
+      isPolling = false;
+      clearTimeout(detectPollRef.current);
+    };
   }, [addLog, serviceList, warmupDone]);
 
   useEffect(() => {
@@ -251,6 +295,9 @@ export default function App() {
     WATCHING: 'var(--yellow)',
     ANOMALY: 'var(--red)',
     FAILED: 'var(--red)',
+    COOLDOWN: 'var(--blue)',
+    CIRCUIT_BROKEN: '#ff9900',
+    RECOVERING: '#ff9900',
   };
 
   return (
@@ -279,7 +326,7 @@ export default function App() {
           <StatCard
             label="Incidents"
             value={incidentCount}
-            sub="this session"
+            sub="all recorded"
           />
         </div>
 
@@ -316,9 +363,11 @@ export default function App() {
           onLog={addLog}
           serviceOptions={chaosServices}
           scenarioOptions={chaosScenarios}
+          autoChaos={autoChaos}
+          setAutoChaos={setAutoChaos}
         />
 
-        <IncidentTimeline incidents={incidents} />
+        <IncidentHistory incidents={incidents} />
       </div>
     </div>
   );

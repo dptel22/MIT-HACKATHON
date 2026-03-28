@@ -1,0 +1,36 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Test and browser temp output
+.pytest_cache/
+.playwright-tmp/
+playwright-tmp/
+
+# Editor and local tooling
+.idea/
+.venv/
+.backend-venv/
+.uv-cache/
+.uv-python/
+.env
+.env.*
+
+# Runtime logs
+*.log
+*-server.out.log
+*-server.err.log
+
+# SQLite transient files
+*.db
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
+# Frontend local installs/builds
+frontend/node_modules/
+frontend/dist/
+
+# Local Kubernetes secrets/config
+backend/kubeconfig.yaml

@@ -3,7 +3,7 @@ import os
 import uuid
 import logging
 
-from config import KUBE_NAMESPACE
+from config import KUBE_CONFIG_PATH, KUBE_NAMESPACE
 
 try:
     from kubernetes import client, config
@@ -20,21 +20,25 @@ def restart_pod(service_name: str) -> tuple:
         pod_name: string that was deleted
         timestamp: float
     """
-    kubeconfig_path = os.path.join(os.path.dirname(__file__), "kubeconfig.yaml")
-    
-    if HAS_K8S and os.path.exists(kubeconfig_path):
+    if HAS_K8S and os.path.exists(KUBE_CONFIG_PATH):
         try:
-            config.load_kube_config(config_file=kubeconfig_path)
+            config.load_kube_config(config_file=KUBE_CONFIG_PATH)
             v1 = client.CoreV1Api()
             
             pods = v1.list_namespaced_pod(
                 namespace=KUBE_NAMESPACE,
                 label_selector=f"app={service_name}",
             )
-            if not pods.items:
-                raise Exception(f"No pods found for service {service_name} with label app={service_name}")
+            active_pod = None
+            for pod in pods.items:
+                if pod.metadata.deletion_timestamp is None:
+                    active_pod = pod
+                    break
+                    
+            if not active_pod:
+                raise Exception(f"No active pods found for service {service_name} with label app={service_name}")
                 
-            pod_to_delete = pods.items[0].metadata.name
+            pod_to_delete = active_pod.metadata.name
             
             print(f"[RECOVERY] Deleting pod {pod_to_delete} in namespace {KUBE_NAMESPACE}.")
             v1.delete_namespaced_pod(name=pod_to_delete, namespace=KUBE_NAMESPACE)
@@ -51,6 +55,6 @@ def restart_pod(service_name: str) -> tuple:
         
         print(
             f"[RECOVERY] Mock mode: Simulated delete request for pod {pod_name} "
-            f"in namespace {KUBE_NAMESPACE} (kubeconfig not found)."
+            f"in namespace {KUBE_NAMESPACE} (kubeconfig not found at {KUBE_CONFIG_PATH})."
         )
         return pod_name, timestamp

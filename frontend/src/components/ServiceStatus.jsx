@@ -4,6 +4,10 @@ function getBadgeClass(state) {
     case 'HEALTHY':  return 'badge-healthy';
     case 'WATCHING': return 'badge-watching';
     case 'ANOMALY':  return 'badge-anomaly';
+    case 'FAILED':   return 'badge-anomaly';
+    case 'RECOVERING': return 'badge-circuit';
+    case 'CIRCUIT_BROKEN': return 'badge-circuit';
+    case 'COOLDOWN': return 'badge-cooldown';
     default:         return 'badge-watching';
   }
 }
@@ -21,6 +25,16 @@ export default function ServiceStatus({ services, onSelectService, selectedServi
           // If backend returned a recovery status for this service, use it
           if (svcState._status) status = svcState._status;
 
+          // Format Cooldown label
+          let statusLabel = status;
+          if (status === 'RECOVERING') {
+            statusLabel = 'RECOVERING';
+          } else if (status === 'CIRCUIT_BROKEN' && svcState.cooldown > 0) {
+            statusLabel = `CIRCUIT BROKEN: ${Math.floor(svcState.cooldown)}s`;
+          } else if (status === 'COOLDOWN' && svcState.cooldown > 0) {
+            statusLabel = `COOLDOWN: ${Math.floor(svcState.cooldown)}s`;
+          }
+
           return (
             <div
               key={name}
@@ -30,7 +44,7 @@ export default function ServiceStatus({ services, onSelectService, selectedServi
               title="Click to view vote buffer & latency"
             >
               <span className="service-name">{name}</span>
-              <span className={`badge ${getBadgeClass(status)}`}>{status}</span>
+              <span className={`badge ${getBadgeClass(status)}`}>{statusLabel}</span>
             </div>
           );
         })}

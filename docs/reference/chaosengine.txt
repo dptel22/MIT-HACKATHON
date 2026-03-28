@@ -1,5 +1,7 @@
 ## Chaos Layer — Complete Structure & Explanation
 
+> Historical reference. Check the current `backend/chaos/` directory and `service_catalog.py` for the active scenario names.
+
 ***
 
 ## Folder Structure
@@ -11,7 +13,7 @@ chaos/
 └── manifests/
     ├── pod_kill.yaml           ← kills one pod
     ├── cpu_stress.yaml         ← pins CPU to 90%
-    ├── memory_stress.yaml      ← fills RAM with 256MB
+    ├── memory_leak.yaml        ← fills RAM with 256MB
     ├── network_latency.yaml    ← adds 300ms delay
     └── packet_loss.yaml        ← drops 45% of packets
 ```
@@ -54,7 +56,7 @@ Each YAML is a Chaos Mesh experiment definition. They are **templates** — the 
 |---|---|---|---|---|
 | `pod_kill.yaml` | PodChaos | Pod is killed, k8s recreates it | 30s | `pod_kill` |
 | `cpu_stress.yaml` | StressChaos | 4 workers pin CPU at 90% | 60s | `cpu_stress` |
-| `memory_stress.yaml` | StressChaos | 2 workers fill 256MB RAM | 60s | `memory_stress` |
+| `memory_leak.yaml` | StressChaos | 2 workers fill 256MB RAM | 60s | `memory_leak` |
 | `network_latency.yaml` | NetworkChaos | Adds 300ms ±50ms delay | 60s | `network_latency` |
 | `packet_loss.yaml` | NetworkChaos | Drops 45% of packets | 60s | `packet_loss` |
 

@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
+from config import DEMO_MODE
 from service_catalog import (
     AUTO_REMEDIABLE_SCENARIOS,
     BASELINE_STATS_PATH,
@@ -39,7 +40,7 @@ logger = logging.getLogger(__name__)
 BLAST_RADIUS_TTL_SECONDS: int = 90
 
 #: Minimum number of simultaneously degraded services to flag a cluster-wide event.
-BLAST_RADIUS_THRESHOLD: int = 2
+BLAST_RADIUS_THRESHOLD: int = 4 if DEMO_MODE else 2
 
 #: Minimum confidence (0–100) required before any automated action is taken.
 CONFIDENCE_THRESHOLD: float = 80.0
@@ -65,12 +66,22 @@ _SEVERITY_WEIGHTS: dict[str, float] = {
 }
 
 #: Base cooldown durations (seconds) keyed by severity label.
-_BASE_COOLDOWNS: dict[str, int] = {
-    "critical": 300,
-    "high": 180,
-    "moderate": 120,
-    "low": 60,
-}
+_BASE_COOLDOWNS: dict[str, int] = (
+    {
+        "critical": 90,
+        "high": 45,
+        "moderate": 30,
+        "low": 15,
+    }
+    if DEMO_MODE
+    else {
+        "critical": 300,
+        "high": 180,
+        "moderate": 120,
+        "low": 60,
+    }
+)
+FAILED_RECOVERY_COOLDOWN_SECONDS: float = 45.0 if DEMO_MODE else 600.0
 
 _REQUIRED_METRIC_KEYS: tuple[str, ...] = (
     "p95_latency_ms",
@@ -683,11 +694,8 @@ def _force_set_cooldown(service: str, duration: float, reason: str) -> None:
     # We model forced cooldowns as a "critical / FAILED" entry whose timestamp
     # is rolled back far enough that the adaptive formula produces *at least*
     # `duration` seconds of remaining cooldown.
-    #
-    # base for (critical, FAILED) = 300 * 1.5 = 450 s
-    # We want remaining = duration. remaining = required - elapsed.
-    # duration = 450 - (_now() - timestamp) => timestamp = _now() - (450 - duration)
-    forced_timestamp = _now() - (450.0 - duration)
+    required = get_cooldown_duration("critical", "FAILED")
+    forced_timestamp = _now() - max(required - duration, 0.0)
     with _get_state_connection() as conn:
         conn.execute(
             """
@@ -944,7 +952,7 @@ def on_recovery_complete(
     if status == "FAILED":
         _force_set_cooldown(
             service,
-            duration=600.0,
+            duration=FAILED_RECOVERY_COOLDOWN_SECONDS,
             reason="recovery_failed",
         )
         # Loud CLI-visible warning — also propagated via logger
