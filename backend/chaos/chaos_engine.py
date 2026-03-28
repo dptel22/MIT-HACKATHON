@@ -2,7 +2,22 @@ import subprocess
 import os
 import time
 
+from config import DEMO_MODE
+from service_catalog import get_supported_chaos_scenarios
+
 MANIFEST_DIR = os.path.join(os.path.dirname(__file__), 'manifests')
+SUPPORTED_SCENARIOS = frozenset(get_supported_chaos_scenarios())
+
+
+def _result(service, scenario, *, success, message="", error=""):
+    return {
+        "success": success,
+        "service": service,
+        "scenario": scenario,
+        "message": message,
+        "error": error,
+        "timestamp": time.time(),
+    }
 
 def check_chaos_mesh_available():
     """Checks if Chaos Mesh CRDs are installed on the cluster."""
@@ -54,11 +69,32 @@ def inject_chaos(service, scenario):
 
 def inject_chaos_safe(service, scenario):
     """THE MAIN FUNCTION: Runs safety checks before applying chaos."""
+    if scenario not in SUPPORTED_SCENARIOS:
+        return _result(
+            service,
+            scenario,
+            success=False,
+            error=f"Scenario {scenario} is not supported",
+        )
+
     # 1. Criticality Check
     if service in ["frontend", "checkoutservice", "productcatalogservice", "paymentservice"]:
         # Allow demoing on some services, but strictly block the most critical ones:
         if service in ["frontend", "checkoutservice"]:
-            return {"success": False, "error": f"Cannot inject chaos into foundational critical service: {service}"}
+            return _result(
+                service,
+                scenario,
+                success=False,
+                error=f"Cannot inject chaos into foundational critical service: {service}",
+            )
+
+    if DEMO_MODE:
+        return _result(
+            service,
+            scenario,
+            success=True,
+            message=f"Demo mode: simulated {scenario} for {service}",
+        )
         
     # 2. Check capabilities
     is_available = check_chaos_mesh_available()
@@ -69,18 +105,29 @@ def inject_chaos_safe(service, scenario):
         if scenario == "pod_kill":
             success, msg = fallback_pod_kill(service)
         else:
-            return {"success": False, "error": f"Chaos Mesh not available. Cannot perform {scenario}, please install helm chart."}
+            return _result(
+                service,
+                scenario,
+                success=False,
+                error=(
+                    f"Chaos Mesh not available. Cannot perform {scenario}, "
+                    "please install helm chart."
+                ),
+            )
             
-    return {
-        "success": success,
-        "service": service,
-        "scenario": scenario,
-        "message": msg,
-        "timestamp": time.time()
-    }
+    return _result(
+        service,
+        scenario,
+        success=success,
+        message=msg,
+        error="" if success else msg,
+    )
 
 def cleanup_all():
     """Wipes all active experiments after demo."""
     experiments = ["podchaos", "stresschaos", "networkchaos"]
     for exp in experiments:
-        subprocess.run(f"kubectl delete {exp} --all --all-namespaces", shell=True, capture_output=True)
+        try:
+            subprocess.run(f"kubectl delete {exp} --all --all-namespaces", shell=True, capture_output=True, timeout=5)
+        except subprocess.TimeoutExpired:
+            pass

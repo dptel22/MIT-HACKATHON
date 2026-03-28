@@ -22,7 +22,7 @@ _DEFAULT_AUTO_REMEDIABLE_SCENARIOS = (
     "pod_kill",
     "cpu_stress",
     "network_latency",
-    "memory_stress",
+    "memory_leak",
     "packet_loss",
 )
 
@@ -101,6 +101,14 @@ AUTO_REMEDIABLE_SCENARIOS: frozenset[str] = frozenset(
 
 def get_supported_services() -> list[str]:
     return list(SUPPORTED_SERVICES)
+
+
+def get_non_critical_services() -> list[str]:
+    return list(NON_CRITICAL_SERVICES)
+
+
+def get_supported_chaos_scenarios() -> list[str]:
+    return list(AUTO_REMEDIABLE_SCENARIOS)
 
 
 def is_supported_service(service: str) -> bool:

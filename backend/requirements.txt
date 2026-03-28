@@ -4,3 +4,8 @@ requests
 kubernetes
 sqlalchemy
 pg8000
+numpy
+joblib
+scikit-learn
+httpx
+pytest

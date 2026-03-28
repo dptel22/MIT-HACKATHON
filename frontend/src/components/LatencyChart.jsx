@@ -36,7 +36,7 @@ export default function LatencyChart({ history, service }) {
     <div className="card">
       <div className="section-title">P95 Latency (last {history.length} windows) · {service}</div>
       <div className="chart-wrap">
-        <ResponsiveContainer width="100%" height="100%">
+        <ResponsiveContainer width="100%" height="100%" minWidth={100} minHeight={200}>
           <BarChart data={data} margin={{ top: 4, right: 4, left: -20, bottom: 0 }} barCategoryGap="25%">
             <CartesianGrid strokeDasharray="3 3" stroke="#242c3d" vertical={false} />
             <XAxis dataKey="window" tick={{ fontSize: 10, fill: '#4a5568' }} axisLine={false} tickLine={false} />

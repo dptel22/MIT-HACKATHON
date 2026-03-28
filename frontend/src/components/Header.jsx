@@ -12,18 +12,18 @@ export default function Header({ connected, warmupDone }) {
 
   return (
     <header className="header">
-      <span className="header-logo">⚡ KubeResilience</span>
+      <div className="header-logo">Resolv<span>.io</span></div>
       <div className="header-spacer" />
       {!warmupDone && (
-        <span className="badge badge-warming" style={{ fontSize: 11 }}>⏳ Warming up…</span>
+        <span className="badge badge-warming">Warming up ...</span>
       )}
       <div className="connection-pill">
         <span className={`dot ${connected ? 'dot-green' : 'dot-red'}`} />
-        <span style={{ color: connected ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
-          {connected ? 'Backend connected' : 'Backend offline'}
+        <span style={{ color: connected ? 'var(--neon-green)' : 'var(--neon-red)', fontWeight: 800 }}>
+          {connected ? 'LINK ESTABLISHED' : 'OFFLINE'}
         </span>
       </div>
-      <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>Polling every 2s</span>
+      <span style={{ color: 'var(--text-dim)', fontSize: 10, fontFamily: 'var(--font-mono)', letterSpacing: '0.1em' }}>POLLING: 2S</span>
       <span className="header-clock">{time}</span>
     </header>
   );

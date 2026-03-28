@@ -2,6 +2,8 @@ import time
 import os
 import prometheus_client
 
+from config import KUBE_NAMESPACE
+
 try:
     from kubernetes import client, config
     HAS_K8S = True
@@ -36,7 +38,10 @@ def verify_recovery(pod_deleted: str, baseline_avg: float) -> str:
             config.load_kube_config(config_file=kubeconfig_path)
             v1 = client.CoreV1Api()
             
-            pods = v1.list_namespaced_pod(namespace="boutique", label_selector=f"app={service_name}")
+            pods = v1.list_namespaced_pod(
+                namespace=KUBE_NAMESPACE,
+                label_selector=f"app={service_name}",
+            )
             
             pod_ready = False
             for pod in pods.items:

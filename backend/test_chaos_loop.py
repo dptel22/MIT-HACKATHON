@@ -1,52 +1,69 @@
-import time
-import requests
+from __future__ import annotations
 
-BASE_URL = "http://localhost:8000/api"
 
-def print_res(name, res):
-    print(f"\n[{name}]")
-    try:
-        if res.status_code >= 400:
-            print(f"Error {res.status_code}: {res.json()}")
-        else:
-            print(res.json())
-    except Exception as e:
-        print(f"Failed: {e}")
+def test_demo_chaos_injection_and_cleanup_drive_detection_state(app_client):
+    client, main = app_client
 
-try:
-    print("====================================")
-    print(" KUBERESILIENCE END-TO-END TEST")
-    print("====================================\n")
+    inject_response = client.post("/api/chaos/inject?service=cartservice&scenario=cpu_stress")
+    assert inject_response.status_code == 200
+    assert inject_response.json()["success"] is True
 
-    # 1. Warm-up
-    print_res("1. WARMUP START", requests.post(f"{BASE_URL}/warmup/start"))
-    print("   [Sleeping 12 seconds for warmup baseline calculation...]")
-    time.sleep(12)
+    detect_response = client.post("/api/detect/run")
+    assert detect_response.status_code == 200
+    cartservice = detect_response.json()["cartservice"]
+    assert cartservice["is_anomaly"] is True
+    assert cartservice["confidence"] >= 80
+    assert cartservice["features"]["p95_latency_ms"] > 10
 
-    # 2. Normal Detection
-    print_res("2. NORMAL DETECTION RUN", requests.post(f"{BASE_URL}/detect/run"))
-    print("   (Notice the 'is_anomaly': false flags across services)")
+    cleanup_response = client.post("/api/chaos/cleanup")
+    assert cleanup_response.status_code == 200
+    assert cleanup_response.json()["message"] == "All chaos experiments cleaned up"
 
-    # 3. Inject Chaos (Triggering anomaly manually via our mock)
-    print("\n   => Injecting cpu_stress chaos into cartservice <= ")
-    print_res("3. CHAOS INJECTION", requests.post(f"{BASE_URL}/chaos/inject?service=cartservice&scenario=cpu_stress"))
+    follow_up_detect = client.post("/api/detect/run")
+    assert follow_up_detect.status_code == 200
+    cleaned = follow_up_detect.json()["cartservice"]
+    assert cleaned["is_anomaly"] is False
+    assert cleaned["votes"] == [0]
+    assert main.state["services"]["cartservice"]["is_anomaly"] is False
 
-    # 4. Anomaly Detection triggered!
-    print_res("4. DETECTING ANOMALY", requests.post(f"{BASE_URL}/detect/run"))
-    print("   (Notice cartservice now has 5 votes and 99.0 confidence!)")
 
-    # 5. Recovery Gate Test (Success!)
-    print_res("5. RECOVER NON-CRITICAL (cartservice)", requests.post(f"{BASE_URL}/recover?service_name=cartservice"))
-    print("   (Recovery succeeded, pod fake-ID deleted via fallback!)")
+def test_failed_chaos_result_returns_400_instead_of_500(app_client, monkeypatch):
+    client, main = app_client
 
-    # 6. Recovery Gate Test (Failure on Critical Service!)
-    print("\n   => Testing Safety Gate by injecting chaos into Critical paymentservice <= ")
-    requests.post(f"{BASE_URL}/chaos/inject?service=paymentservice&scenario=pod_kill")
-    print_res("6. RECOVER CRITICAL (paymentservice)", requests.post(f"{BASE_URL}/recover?service_name=paymentservice"))
-    print("   (Auto-Recovery blocked because paymentservice is a critical gate!)")
-    
-    # 7. Database Check
-    print_res("7. VIEW INCIDENTS DATABASE", requests.get(f"{BASE_URL}/incidents"))
+    monkeypatch.setattr(
+        main,
+        "inject_chaos_safe",
+        lambda service, scenario: {
+            "success": False,
+            "message": "No running pod found for cartservice",
+        },
+    )
 
-except Exception as e:
-    print(f"Test script failed. Ensure Uvicorn is running: {e}")
+    response = client.post("/api/chaos/inject?service=cartservice&scenario=pod_kill")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "No running pod found for cartservice"
+
+
+def test_successful_recovery_resets_live_service_state(app_client, monkeypatch):
+    client, main = app_client
+
+    client.post("/api/chaos/inject?service=cartservice&scenario=cpu_stress")
+    detect_response = client.post("/api/detect/run")
+    assert detect_response.status_code == 200
+
+    monkeypatch.setattr(
+        main.recovery,
+        "restart_pod",
+        lambda service_name: (f"{service_name}-demo-pod", 1234567890.0),
+    )
+    monkeypatch.setattr(main.verifier, "verify_recovery", lambda *_args, **_kwargs: "HEALED")
+
+    response = client.post("/api/recover?service_name=cartservice")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "HEALED"
+    assert payload["pod_name"] == "cartservice-demo-pod"
+    assert main.state["services"]["cartservice"]["is_anomaly"] is False
+    assert main.state["services"]["cartservice"]["votes"] == []

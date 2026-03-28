@@ -1,23 +1,142 @@
+from __future__ import annotations
+
+import json
 import math
-import os
+import time
 from datetime import datetime, timezone
 
 import requests
 
-PROMETHEUS_URL = os.environ.get(
-    "PROMETHEUS_URL",
-    "https://beulah-unadaptive-bumptiously.ngrok-free.dev",
-)
+from config import DEMO_MODE, KUBE_NAMESPACE, PROMETHEUS_TIMEOUT_SECONDS, PROMETHEUS_URL
+from service_catalog import BASELINE_STATS_PATH, get_supported_services
+
 HEADERS = {"ngrok-skip-browser-warning": "true"}
-TIMEOUT = 5
-NAMESPACE = "default"
-SERVICES = [
-    "cartservice",
-    "recommendationservice",
-    "adservice",
-    "productcatalogservice",
-    "checkoutservice",
-]
+TIMEOUT = PROMETHEUS_TIMEOUT_SECONDS
+NAMESPACE = KUBE_NAMESPACE
+SERVICES = get_supported_services()
+_CONNECTIVITY_TTL_SECONDS = 15.0
+_last_connectivity_check = 0.0
+_last_connectivity_ok = False
+_demo_chaos_state: dict[str, str] = {}
+
+
+def _load_demo_baselines() -> dict[str, dict]:
+    try:
+        with BASELINE_STATS_PATH.open("r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+        if isinstance(raw, dict):
+            return {str(service): dict(stats) for service, stats in raw.items()}
+    except Exception:
+        pass
+    return {}
+
+
+_demo_baselines = _load_demo_baselines()
+
+
+def _missing_metrics_payload(service: str) -> dict:
+    return {
+        "service": service,
+        "p95_latency_ms": None,
+        "error_rate_pct": None,
+        "cpu_cores": None,
+        "memory_mb": None,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "all_available": False,
+        "missing_fields": [
+            "p95_latency_ms",
+            "error_rate_pct",
+            "cpu_cores",
+            "memory_mb",
+        ],
+    }
+
+
+def _demo_metric_value(service: str, key: str, fallback: float) -> float:
+    stats = _demo_baselines.get(service, {})
+    return float(stats.get(key, fallback))
+
+
+def _demo_metrics(service: str) -> dict:
+    latency = _demo_metric_value(service, "p95_latency_ms_mean", 10.0)
+    error_rate = _demo_metric_value(service, "error_rate_pct_mean", 0.0)
+    cpu = _demo_metric_value(service, "cpu_cores_mean", 0.02)
+    memory = _demo_metric_value(service, "memory_mb_mean", 64.0)
+    scenario = _demo_chaos_state.get(service)
+
+    if scenario == "cpu_stress":
+        latency *= 2.8
+        error_rate = max(error_rate, 3.5)
+        cpu = max(cpu * 8.0, cpu + 0.05)
+        memory *= 1.3
+    elif scenario == "memory_stress":
+        latency *= 2.6
+        error_rate = max(error_rate, 2.5)
+        cpu *= 1.2
+        memory = max(memory * 6.0, memory + 128.0)
+    elif scenario == "network_latency":
+        latency *= 6.5
+        error_rate = max(error_rate, 4.0)
+        cpu *= 1.0
+    elif scenario == "packet_loss":
+        latency *= 4.0
+        error_rate = max(error_rate, 6.0)
+        cpu *= 1.5
+    elif scenario == "pod_kill":
+        latency *= 8.0
+        error_rate = max(error_rate, 8.0)
+        cpu *= 0.3
+        memory *= 0.9
+
+    return {
+        "service": service,
+        "p95_latency_ms": round(latency, 4),
+        "error_rate_pct": round(error_rate, 4),
+        "cpu_cores": round(cpu, 6),
+        "memory_mb": round(memory, 4),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "all_available": True,
+        "missing_fields": [],
+    }
+
+
+def set_demo_chaos(service: str, scenario: str) -> None:
+    _demo_chaos_state[service] = scenario
+
+
+def clear_demo_chaos(service: str | None = None) -> None:
+    if service is None:
+        _demo_chaos_state.clear()
+        return
+    _demo_chaos_state.pop(service, None)
+
+
+def _probe_prometheus(force: bool = False) -> bool:
+    global _last_connectivity_check, _last_connectivity_ok
+
+    if not PROMETHEUS_URL:
+        return False
+
+    now = time.monotonic()
+    if not force and (now - _last_connectivity_check) < _CONNECTIVITY_TTL_SECONDS:
+        return _last_connectivity_ok
+
+    _last_connectivity_check = now
+
+    try:
+        response = requests.get(
+            f"{PROMETHEUS_URL}/api/v1/query",
+            params={"query": "up"},
+            headers=HEADERS,
+            timeout=min(TIMEOUT, 0.75),
+        )
+        response.raise_for_status()
+        data = response.json()
+        _last_connectivity_ok = data.get("status") == "success"
+    except Exception:
+        _last_connectivity_ok = False
+
+    return _last_connectivity_ok
 
 
 def _query(promql: str) -> float | None:
@@ -134,6 +253,12 @@ def _get_memory(service: str) -> float | None:
 
 
 def fetch_metrics(service: str) -> dict:
+    if DEMO_MODE:
+        return _demo_metrics(service)
+
+    if not PROMETHEUS_URL or not _probe_prometheus():
+        return _missing_metrics_payload(service)
+
     try:
         lat = _get_latency(service)
         err, err_found = _get_error_rate(service)
@@ -169,38 +294,23 @@ def fetch_metrics(service: str) -> dict:
         }
     except Exception as e:
         print(f"[PROM ERROR] fetch_metrics({service}) crashed: {e}")
-        return {
-            "service": service,
-            "p95_latency_ms": None,
-            "error_rate_pct": None,
-            "cpu_cores": None,
-            "memory_mb": None,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "all_available": False,
-            "missing_fields": [
-                "p95_latency_ms",
-                "error_rate_pct",
-                "cpu_cores",
-                "memory_mb",
-            ],
-        }
+        return _missing_metrics_payload(service)
 
 
 def validate_connection() -> bool:
+    if DEMO_MODE:
+        print("Prometheus demo mode enabled")
+        return True
+
+    if not PROMETHEUS_URL:
+        print("Prometheus URL not configured")
+        return False
+
     try:
-        response = requests.get(
-            f"{PROMETHEUS_URL}/api/v1/query",
-            params={"query": "up"},
-            headers=HEADERS,
-            timeout=TIMEOUT,
-        )
-        response.raise_for_status()
-        data = response.json()
-        if data.get("status") == "success":
+        if _probe_prometheus(force=True):
             print(f"Prometheus reachable at {PROMETHEUS_URL}")
             return True
-        error = data.get("error", "unknown response")
-        print(f" Prometheus unreachable: {error}")
+        print(f"Prometheus unreachable at {PROMETHEUS_URL}")
         return False
     except Exception as e:
         print(f"Prometheus unreachable: {e}")

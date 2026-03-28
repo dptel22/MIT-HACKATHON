@@ -32,7 +32,7 @@ export default function IncidentTimeline({ incidents }) {
 
   if (latest) {
     const ts = latest.timestamp || '';
-    const timeStr = ts ? new Date(ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
+    const timeStr = ts ? new Date(ts * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
 
     if (latest.status === 'HEALED') {
       doneStages = 5;

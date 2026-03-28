@@ -1,6 +1,5 @@
 """
 decision.py — KubeResilience Decision Engine
-============================================
 Translates detection output (service, confidence, triggered, metrics,
 vote_buffer) into a structured DecisionResult with a full audit trail.
 
@@ -31,14 +30,10 @@ from service_catalog import (
     CRITICAL_SERVICES,
 )
 
-# ---------------------------------------------------------------------------
 # Logging
-# ---------------------------------------------------------------------------
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
 # Constants
-# ---------------------------------------------------------------------------
 
 #: Seconds after which a degraded-service entry expires from blast-radius state.
 BLAST_RADIUS_TTL_SECONDS: int = 90
@@ -84,9 +79,7 @@ _REQUIRED_METRIC_KEYS: tuple[str, ...] = (
     "memory_mb",
 )
 
-# ---------------------------------------------------------------------------
 # Type aliases & TypedDicts
-# ---------------------------------------------------------------------------
 
 MetricsDict = dict[str, float]
 """Expected keys: p95_latency_ms, error_rate_pct, cpu_cores, memory_mb"""
@@ -124,9 +117,7 @@ class VerificationResult(TypedDict):
     detail: str
 
 
-# ---------------------------------------------------------------------------
 # Shared state and baseline stats
-# ---------------------------------------------------------------------------
 
 
 def _load_baseline_stats() -> dict[str, ServiceBaseline]:
@@ -212,9 +203,7 @@ _init_state_db()
 
 
 
-# ---------------------------------------------------------------------------
 # Data contract — DecisionResult
-# ---------------------------------------------------------------------------
 
 
 @dataclass(slots=True)
@@ -254,9 +243,7 @@ class DecisionResult:
     audit_log: list[str] = field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _utc_iso_now() -> str:
@@ -316,9 +303,7 @@ def _sanitize_metrics(metrics: dict[str, Any]) -> tuple[MetricsDict, list[str]]:
     return sanitized, missing_fields
 
 
-# ---------------------------------------------------------------------------
 # Module 1 — Scenario Classifier
-# ---------------------------------------------------------------------------
 
 
 def classify_scenario(metrics: MetricsDict, service: str) -> str:
@@ -362,7 +347,7 @@ def classify_scenario(metrics: MetricsDict, service: str) -> str:
         memory_ratio,
     )
 
-    # --- Decision tree (order matters — most specific rules first) ----------
+    # Decision tree (order matters — most specific rules first)
 
     if cpu_ratio > 7.0 and latency_ratio > 2.0:
         return "cpu_stress"
@@ -384,9 +369,7 @@ def classify_scenario(metrics: MetricsDict, service: str) -> str:
     return "unknown"
 
 
-# ---------------------------------------------------------------------------
 # Module 2 — Severity Scorer
-# ---------------------------------------------------------------------------
 
 
 def compute_severity(
@@ -465,9 +448,7 @@ def compute_severity(
     return label, round(normalised, 4)
 
 
-# ---------------------------------------------------------------------------
 # Module 3 — Blast Radius Guard
-# ---------------------------------------------------------------------------
 
 
 def _prune_degraded_services(conn: sqlite3.Connection, now: float) -> None:
@@ -550,9 +531,7 @@ def is_blast_radius_exceeded() -> tuple[bool, str]:
     return False, "ok"
 
 
-# ---------------------------------------------------------------------------
 # Module 4 — Adaptive Cooldown
-# ---------------------------------------------------------------------------
 
 
 def get_cooldown_duration(
@@ -725,9 +704,7 @@ def _force_set_cooldown(service: str, duration: float, reason: str) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
 # Module 5 — Main Decision Function
-# ---------------------------------------------------------------------------
 
 
 def make_decision(
@@ -928,138 +905,8 @@ def make_decision(
         audit_log=audit,
     )
 
-    # ── Step 1: Run classifiers (Safe fallback for missing baselines) ───────
-    if service in _baseline_stats:
-        scenario_type: str = classify_scenario(metrics, service)
-        severity_label, severity_score = compute_severity(metrics, service)
-    else:
-        scenario_type = "unknown"
-        severity_label = "low"
-        severity_score = 0.0
 
-    audit.append(
-        f"[1] Classification | scenario={scenario_type} "
-        f"severity={severity_label} score={severity_score:.4f}"
-    )
-
-    # ── Step 2: Update blast radius ────────────────────────────────────────
-    update_blast_radius(service, triggered)
-    audit.append(
-        f"[2] BlastRadius updated | degraded_services={list(degraded_services.keys())}"
-    )
-
-    # ── Step 3: Gate — anomaly must be triggered ───────────────────────────
-    if not triggered:
-        audit.append("[3] GATE FAILED — anomaly not persistent (triggered=False)")
-        return DecisionResult(
-            action="WAIT",
-            reason="anomaly_not_persistent",
-            scenario_type=scenario_type,
-            severity_label=severity_label,
-            severity_score=severity_score,
-            confidence=confidence,
-            audit_log=audit,
-        )
-    audit.append("[3] Gate passed — anomaly is triggered")
-
-    # ── Step 4: Gate — confidence threshold ───────────────────────────────
-    if confidence < CONFIDENCE_THRESHOLD:
-        audit.append(
-            f"[4] GATE FAILED — confidence {confidence:.1f} < {CONFIDENCE_THRESHOLD}"
-        )
-        return DecisionResult(
-            action="WAIT",
-            reason="confidence_below_threshold",
-            scenario_type=scenario_type,
-            severity_label=severity_label,
-            severity_score=severity_score,
-            confidence=confidence,
-            audit_log=audit,
-        )
-    audit.append(f"[4] Gate passed — confidence {confidence:.1f} >= {CONFIDENCE_THRESHOLD}")
-
-    # ── Step 5: Gate — critical service ───────────────────────────────────
-    if service in CRITICAL_SERVICES:
-        audit.append(f"[5] GATE FAILED — '{service}' is a critical service → ESCALATE")
-        return DecisionResult(
-            action="ESCALATE",
-            reason="critical_service_manual_only",
-            scenario_type=scenario_type,
-            severity_label=severity_label, # Now safely 'low' if no baseline
-            severity_score=severity_score,
-            confidence=confidence,
-            audit_log=audit,
-        )
-    audit.append(f"[5] Gate passed — '{service}' is not in CRITICAL_SERVICES")
-
-    # ── Step 6: Gate — Allowlisted Scenario ───────────────────────────────
-    if scenario_type not in _AUTO_REMEDIABLE_SCENARIOS:
-        audit.append(f"[6] GATE FAILED — scenario '{scenario_type}' is not auto-remediable → ESCALATE")
-        return DecisionResult(
-            action="ESCALATE",
-            reason="scenario_not_auto_remediable",
-            scenario_type=scenario_type,
-            severity_label=severity_label,
-            severity_score=severity_score,
-            confidence=confidence,
-            audit_log=audit,
-        )
-    audit.append(f"[6] Gate passed — scenario '{scenario_type}' is auto-remediable")
-
-    # ── Step 7: Gate — blast radius ───────────────────────────────────────
-    blast_exceeded, blast_reason = is_blast_radius_exceeded()
-    if blast_exceeded:
-        audit.append(
-            f"[7] GATE FAILED — blast radius exceeded: {blast_reason} "
-            f"degraded={list(degraded_services.keys())}"
-        )
-        return DecisionResult(
-            action="ESCALATE",
-            reason=blast_reason,
-            scenario_type=scenario_type,
-            severity_label=severity_label,
-            severity_score=severity_score,
-            confidence=confidence,
-            audit_log=audit,
-        )
-    audit.append("[7] Gate passed — blast radius within safe limits")
-
-    # ── Step 8: Gate — adaptive cooldown ──────────────────────────────────
-    cooldown_active, cooldown_remaining = is_cooldown_active(service)
-    if cooldown_active:
-        audit.append(
-            f"[8] GATE FAILED — cooldown active for '{service}', "
-            f"{cooldown_remaining}s remaining"
-        )
-        return DecisionResult(
-            action="WAIT",
-            reason="cooldown_active",
-            scenario_type=scenario_type,
-            severity_label=severity_label,
-            severity_score=severity_score,
-            confidence=confidence,
-            cooldown_remaining=cooldown_remaining,
-            audit_log=audit,
-        )
-    audit.append("[8] Gate passed — no active cooldown")
-
-    # ── Step 9: All gates passed — authorise recovery ─────────────────────
-    audit.append("[9] ALL GATES PASSED → action=RECOVER")
-    return DecisionResult(
-        action="RECOVER",
-        reason="all_gates_passed",
-        scenario_type=scenario_type,
-        severity_label=severity_label,
-        severity_score=severity_score,
-        confidence=confidence,
-        cooldown_remaining=0,
-        audit_log=audit,
-    )
-
-
-# ---------------------------------------------------------------------------
 # Module 6 — Post-Recovery Hook
-# ---------------------------------------------------------------------------
 
 
 def on_recovery_complete(

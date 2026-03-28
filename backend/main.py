@@ -12,8 +12,13 @@ import detector
 import decision
 import recovery
 import verifier
+from config import DEMO_MODE, KUBE_NAMESPACE
 from chaos.chaos_engine import inject_chaos_safe, cleanup_all
-from service_catalog import get_supported_services
+from service_catalog import (
+    get_non_critical_services,
+    get_supported_chaos_scenarios,
+    get_supported_services,
+)
 
 models.Base.metadata.create_all(bind=database.engine)
 
@@ -28,6 +33,8 @@ app.add_middleware(
 )
 
 SERVICES = get_supported_services()
+CHAOS_SERVICES = get_non_critical_services()
+CHAOS_SCENARIOS = get_supported_chaos_scenarios()
 
 # Independent States!
 state = {
@@ -59,6 +66,17 @@ def read_health():
 def list_services():
     """Returns the exact list of tracked services for the frontend."""
     return {"services": SERVICES}
+
+
+@app.get("/api/config")
+def get_runtime_config():
+    return {
+        "services": SERVICES,
+        "chaos_services": CHAOS_SERVICES,
+        "chaos_scenarios": CHAOS_SCENARIOS,
+        "demo_mode": DEMO_MODE,
+        "namespace": KUBE_NAMESPACE,
+    }
 
 
 @app.post("/api/warmup/start")
@@ -132,13 +150,15 @@ def recover_service(service_name: str, db: Session = Depends(get_db)):
     except Exception as e:
         print(f"Warning: Failed to log adaptive cooldown record: {e}")
     
+    incident_votes = list(svc_state["votes"])
+
     if status == "FAILED":
         state["manual_mode"] = True
     
     new_incident = models.Incident(
         service=service_name,
         confidence=svc_state["confidence"],
-        votes=list(svc_state["votes"]), # Make a copy
+        votes=incident_votes,
         action=f"restarted 1 pod ({pod_deleted})",
         pod_name=pod_deleted,
         status=status,
@@ -148,6 +168,12 @@ def recover_service(service_name: str, db: Session = Depends(get_db)):
     db.add(new_incident)
     db.commit()
     db.refresh(new_incident)
+
+    if status == "HEALED":
+        prometheus_client.clear_demo_chaos(service_name)
+        svc_state["votes"].clear()
+        svc_state["confidence"] = 0.0
+        svc_state["is_anomaly"] = False
     
     return new_incident
 
@@ -164,21 +190,29 @@ def get_latest_incident(db: Session = Depends(get_db)):
 
 @app.post("/api/chaos/inject")
 def trigger_chaos(service: str, scenario: str):
-    if service not in SERVICES and service not in ["frontend", "checkoutservice"]:
+    if service not in SERVICES:
         raise HTTPException(status_code=404, detail=f"Service {service} not tracked")
     
     result = inject_chaos_safe(service, scenario)
     if not result["success"]:
-        raise HTTPException(status_code=400, detail=result["error"])
+        detail = result.get("error") or result.get("message") or "Chaos injection failed"
+        raise HTTPException(status_code=400, detail=detail)
         
     if service in state["services"]:
         state["services"][service]["is_anomaly"] = True
         state["services"][service]["confidence"] = 99.0
         state["services"][service]["votes"] = [1, 1, 1, 1, 1]
+        prometheus_client.set_demo_chaos(service, scenario)
     
     return result
 
 @app.post("/api/chaos/cleanup")
 def chaos_cleanup():
     cleanup_all()
+    prometheus_client.clear_demo_chaos()
+    state["manual_mode"] = False
+    for svc_state in state["services"].values():
+        svc_state["votes"].clear()
+        svc_state["confidence"] = 0.0
+        svc_state["is_anomaly"] = False
     return {"message": "All chaos experiments cleaned up"}

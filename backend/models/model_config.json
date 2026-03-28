@@ -30,7 +30,7 @@
     "pod_kill",
     "cpu_stress",
     "network_latency",
-    "memory_stress",
+    "memory_leak",
     "packet_loss"
   ],
   "safety_only_chaos_scenarios": [

@@ -1,36 +1,41 @@
-import time
-import requests
+from __future__ import annotations
 
-BASE_URL = "http://localhost:8000/api"
 
-def print_res(name, res):
-    print(f"\n--- {name} ---")
-    try:
-        print(f"Status: {res.status_code}")
-        print(res.json())
-    except Exception as e:
-        print(f"Failed: {e}")
+def test_runtime_config_exposes_backend_catalog(app_client):
+    client, main = app_client
 
-try:
-    print_res("1. HEALTH CHECK", requests.get(f"{BASE_URL}/health"))
+    response = client.get("/api/config")
 
-    print_res("2. LATEST INCIDENT (Empty)", requests.get(f"{BASE_URL}/latest"))
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["services"] == main.SERVICES
+    assert payload["chaos_services"] == main.CHAOS_SERVICES
+    assert payload["chaos_scenarios"] == main.CHAOS_SCENARIOS
+    assert payload["demo_mode"] is True
+    assert payload["namespace"] == "boutique"
 
-    print_res("3. POST WARMUP START", requests.post(f"{BASE_URL}/warmup/start"))
-    
-    print("\n[Sleeping 12s to wait for warmup to finish...]")
-    time.sleep(12)
 
-    print_res("4. GET WARMUP STATUS", requests.get(f"{BASE_URL}/warmup/status"))
+def test_detect_run_returns_demo_metrics_without_missing_fields(app_client):
+    client, main = app_client
 
-    print("\n[Running Detection Loop to trigger anomaly]")
-    for i in range(5):
-        print_res(f"5.{i} DETECT RUN", requests.post(f"{BASE_URL}/detect/run"))
-        time.sleep(0.5)
+    response = client.post("/api/detect/run")
 
-    print_res("6. POST RECOVER (Adservice)", requests.post(f"{BASE_URL}/recover?service_name=adservice"))
+    assert response.status_code == 200
+    payload = response.json()
+    assert list(payload.keys()) == main.SERVICES
 
-    print_res("7. GET INCIDENTS (Should have 1)", requests.get(f"{BASE_URL}/incidents"))
+    for service_name in main.SERVICES:
+        service_state = payload[service_name]
+        assert service_state["features"]["all_available"] is True
+        assert service_state["features"]["missing_fields"] == []
+        assert service_state["is_anomaly"] is False
+        assert service_state["votes"] == [0]
 
-except Exception as e:
-    print(f"Test script failed: {e}")
+
+def test_recover_rejects_untracked_service(app_client):
+    client, _ = app_client
+
+    response = client.post("/api/recover?service_name=paymentservice")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Service not tracked"
